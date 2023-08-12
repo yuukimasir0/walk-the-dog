@@ -44,16 +44,16 @@ impl Game for WalkTheDog {
 
     fn update(&mut self, keystate: &KeyState) {
         let mut velocity = Point { x: 0, y: 0 };
-        if keystate.is_pressed("ArrowDown") {
+        if keystate.is_pressed("S") {
             velocity.y += 3;
         }
-        if keystate.is_pressed("ArrowUp") {
+        if keystate.is_pressed("W") {
             velocity.y -= 3;
         }
-        if keystate.is_pressed("ArrowRight") {
+        if keystate.is_pressed("D") {
             velocity.x += 3;
         }
-        if keystate.is_pressed("ArrowLeft") {
+        if keystate.is_pressed("A") {
             velocity.x -= 3;
         }
 
