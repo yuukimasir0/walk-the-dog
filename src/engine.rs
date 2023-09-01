@@ -46,13 +46,30 @@ pub struct SheetRect {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Cell {
     pub frame: SheetRect,
+    pub sprite_source_size: SheetRect,
 }
 
 #[derive(Deserialize, Clone)]
 pub struct Sheet {
     pub frames: HashMap<String, Cell>,
+}
+
+pub struct Image {
+    element: HtmlImageElement,
+    position: Point,
+    bounding_box: Rect,
+}
+
+impl Rect {
+    pub fn intersects(&self, rect: &Rect) -> bool {
+        self.x < (rect.x + rect.width)
+            && self.x + self.width > rect.x
+            && self.y < (rect.y + rect.width)
+            && self.y + self.width > rect.y
+    }
 }
 
 impl Renderer {
@@ -79,6 +96,57 @@ impl Renderer {
                 destination.height.into(),
             )
             .expect("Drawing is theowing exception! Unrecoverable error");
+    }
+
+    pub fn draw_entire_image(&self, image: &HtmlImageElement, position: Point) {
+        self.context
+            .draw_image_with_html_image_element(image, position.x.into(), position.y.into())
+            .expect("Drawing is throwing ezception! Unrecoverable error.");
+    }
+
+    pub fn draw_rect(&self, bounding_box: &Rect) {
+        self.context.set_stroke_style(&JsValue::from_str("#FF0000"));
+        self.context.begin_path();
+        self.context.rect(
+            bounding_box.x.into(),
+            bounding_box.y.into(),
+            bounding_box.width.into(),
+            bounding_box.height.into(),
+        );
+        self.context.stroke();
+    }
+}
+
+impl Image {
+    pub fn new(element: HtmlImageElement, position: Point) -> Self {
+        let bounding_box = Rect {
+            x: position.x.into(),
+            y: position.y.into(),
+            width: element.width() as f32,
+            height: element.height() as f32,
+        };
+        Self {
+            element,
+            position,
+            bounding_box,
+        }
+    }
+
+    pub fn draw(&self, renderer: &Renderer) {
+        renderer.draw_entire_image(&self.element, self.position)
+    }
+
+    pub fn draw_rect(&self, renderer: &Renderer) {
+        renderer.draw_rect(&Rect {
+            x: self.position.x as f32,
+            y: self.position.y as f32,
+            width: self.element.width() as f32,
+            height: self.element.height() as f32,
+        })
+    }
+
+    pub fn bounding_box(&self) -> &Rect {
+        &self.bounding_box
     }
 }
 
@@ -151,7 +219,6 @@ impl KeyState {
     fn set_releaded(&mut self, code: &str) {
         self.pressed_keys.remove(code);
     }
-
 }
 
 fn prepare_input() -> Result<UnboundedReceiver<KeyPress>> {

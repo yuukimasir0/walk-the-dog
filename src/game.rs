@@ -1,7 +1,7 @@
 use self::red_hat_boy_states::*;
 use crate::{
     browser,
-    engine::{self, Game, KeyState, Point, Rect, Renderer, Sheet},
+    engine::{self, Cell, Game, Image, KeyState, Point, Rect, Renderer, Sheet},
 };
 use anyhow::anyhow;
 use anyhow::Result;
@@ -10,10 +10,15 @@ use gloo_utils::format::JsValueSerdeExt;
 use wasm_bindgen::JsValue;
 use web_sys::HtmlImageElement;
 
-
 pub enum WalkTheDog {
     Loading,
-    Loaded(RedHatBoy),
+    Loaded(Walk),
+}
+
+pub struct Walk {
+    boy: RedHatBoy,
+    background: Image,
+    stone: Image,
 }
 
 impl WalkTheDog {
@@ -25,16 +30,23 @@ impl WalkTheDog {
 mod red_hat_boy_states {
     use crate::engine::Point;
 
-    const FLOOR: i16 = 475;
+    const FLOOR: i16 = 479;
+    const STARTING_POINT: i16 = -20;
+
     const IDLE_FRAME_NAME: &str = "Idle";
     const RUN_FRAME_NAME: &str = "Run";
     const SLIDE_FRAME_NAME: &str = "Slide";
     const JUMP_FRAME_NAME: &str = "Jump";
+    const FALLING_FRAME_NAME: &str = "Dead";
+
     const IDLE_FRAMES: u8 = 29;
     const RUNNING_FRAMES: u8 = 23;
     const SLIDING_FRAMES: u8 = 14;
     const JUMPING_FRAMES: u8 = 35;
+    const FALLING_FRAMES: u8 = 29;
+
     const GRAVITY: i16 = 1;
+
     const RUNNING_SPEED: i16 = 3;
     const JUMP_SPEED: i16 = -25;
 
@@ -42,10 +54,12 @@ mod red_hat_boy_states {
     pub struct Idle;
     #[derive(Clone, Copy)]
     pub struct Running;
-     #[derive(Clone, Copy)]
+    #[derive(Clone, Copy)]
     pub struct Sliding;
     #[derive(Clone, Copy)]
     pub struct Jumping;
+    #[derive(Clone, Copy)]
+    pub struct Falling;
 
     #[derive(Clone, Copy)]
     pub struct RedHatBoyContext {
@@ -71,7 +85,10 @@ mod red_hat_boy_states {
             RedHatBoyState {
                 context: RedHatBoyContext {
                     frame: 0,
-                    position: Point { x: 0, y: FLOOR },
+                    position: Point {
+                        x: STARTING_POINT,
+                        y: FLOOR,
+                    },
                     velocity: Point { x: 0, y: 0 },
                 },
                 _state: Idle {},
@@ -106,17 +123,31 @@ mod red_hat_boy_states {
         pub fn frame_name(&self) -> &str {
             RUN_FRAME_NAME
         }
-        pub fn update(mut self) -> Self{
+
+        pub fn update(mut self) -> Self {
             self.context = self.context.update(RUNNING_FRAMES);
             self
         }
 
         pub fn slide(self) -> RedHatBoyState<Sliding> {
-            RedHatBoyState { context: self.context.reset_frame(), _state: Sliding {} }
+            RedHatBoyState {
+                context: self.context.reset_frame(),
+                _state: Sliding {},
+            }
         }
 
         pub fn jump(self) -> RedHatBoyState<Jumping> {
-            RedHatBoyState { context: self.context.set_vertical_velocity(JUMP_SPEED).reset_frame(), _state: Jumping {} }
+            RedHatBoyState {
+                context: self.context.set_vertical_velocity(JUMP_SPEED).reset_frame(),
+                _state: Jumping {},
+            }
+        }
+
+        pub fn knock_out(self) -> RedHatBoyState<Falling> {
+            RedHatBoyState {
+                context: self.context,
+                _state: Falling {},
+            }
         }
     }
 
@@ -124,9 +155,10 @@ mod red_hat_boy_states {
         pub fn frame_name(&self) -> &str {
             SLIDE_FRAME_NAME
         }
+
         pub fn update(mut self) -> SlidingEndState {
             self.context = self.context.update(SLIDING_FRAMES);
-            
+
             if self.context.frame >= SLIDING_FRAMES {
                 SlidingEndState::Complete(self.stand())
             } else {
@@ -135,7 +167,17 @@ mod red_hat_boy_states {
         }
 
         pub fn stand(self) -> RedHatBoyState<Running> {
-            RedHatBoyState { context: self.context.reset_frame(), _state: Running }
+            RedHatBoyState {
+                context: self.context.reset_frame(),
+                _state: Running,
+            }
+        }
+
+        pub fn knock_out(self) -> RedHatBoyState<Falling> {
+            RedHatBoyState {
+                context: self.context,
+                _state: Falling {},
+            }
         }
     }
 
@@ -143,9 +185,10 @@ mod red_hat_boy_states {
         pub fn frame_name(&self) -> &str {
             JUMP_FRAME_NAME
         }
+
         pub fn update(mut self) -> JumpingEndState {
             self.context = self.context.update(JUMPING_FRAMES);
-            
+
             if self.context.position.y >= FLOOR {
                 JumpingEndState::Complete(self.land())
             } else {
@@ -154,7 +197,28 @@ mod red_hat_boy_states {
         }
 
         pub fn land(self) -> RedHatBoyState<Running> {
-            RedHatBoyState { context: self.context.reset_frame(), _state: Running }
+            RedHatBoyState {
+                context: self.context.reset_frame(),
+                _state: Running,
+            }
+        }
+
+        pub fn knock_out(self) -> RedHatBoyState<Falling> {
+            RedHatBoyState {
+                context: self.context,
+                _state: Falling {},
+            }
+        }
+    }
+
+    impl RedHatBoyState<Falling> {
+        pub fn frame_name(&self) -> &str {
+            FALLING_FRAME_NAME
+        }
+
+        pub fn update(mut self) -> Self {
+            self.context = self.context.update(SLIDING_FRAMES);
+            self
         }
     }
 
@@ -194,7 +258,7 @@ mod red_hat_boy_states {
             self
         }
 
-        fn set_vertical_velocity(mut self, y: i16) -> Self{
+        fn set_vertical_velocity(mut self, y: i16) -> Self {
             self.velocity.y = y;
             self
         }
@@ -207,12 +271,14 @@ enum RedHatBoyStateMachine {
     Running(RedHatBoyState<Running>),
     Sliding(RedHatBoyState<Sliding>),
     Jumping(RedHatBoyState<Jumping>),
+    Falling(RedHatBoyState<Falling>),
 }
 
 pub enum Event {
     Run,
     Slide,
     Jump,
+    KnockOut,
     Update,
 }
 
@@ -226,6 +292,9 @@ impl RedHatBoyStateMachine {
             (RedHatBoyStateMachine::Running(state), Event::Update) => state.update().into(),
             (RedHatBoyStateMachine::Sliding(state), Event::Update) => state.update().into(),
             (RedHatBoyStateMachine::Jumping(state), Event::Update) => state.update().into(),
+            (RedHatBoyStateMachine::Running(state), Event::KnockOut) => state.knock_out().into(),
+            (RedHatBoyStateMachine::Sliding(state), Event::KnockOut) => state.knock_out().into(),
+            (RedHatBoyStateMachine::Jumping(state), Event::KnockOut) => state.knock_out().into(),
             _ => self,
         }
     }
@@ -236,6 +305,7 @@ impl RedHatBoyStateMachine {
             RedHatBoyStateMachine::Running(state) => state.frame_name(),
             RedHatBoyStateMachine::Sliding(state) => state.frame_name(),
             RedHatBoyStateMachine::Jumping(state) => state.frame_name(),
+            RedHatBoyStateMachine::Falling(state) => state.frame_name(),
         }
     }
 
@@ -245,6 +315,7 @@ impl RedHatBoyStateMachine {
             RedHatBoyStateMachine::Running(state) => &state.context(),
             RedHatBoyStateMachine::Sliding(state) => &state.context(),
             RedHatBoyStateMachine::Jumping(state) => &state.context(),
+            RedHatBoyStateMachine::Falling(state) => &state.context(),
         }
     }
 
@@ -274,6 +345,12 @@ impl From<RedHatBoyState<Sliding>> for RedHatBoyStateMachine {
 impl From<RedHatBoyState<Jumping>> for RedHatBoyStateMachine {
     fn from(state: RedHatBoyState<Jumping>) -> Self {
         RedHatBoyStateMachine::Jumping(state)
+    }
+}
+
+impl From<RedHatBoyState<Falling>> for RedHatBoyStateMachine {
+    fn from(state: RedHatBoyState<Falling>) -> Self {
+        RedHatBoyStateMachine::Falling(state)
     }
 }
 
@@ -332,12 +409,48 @@ impl RedHatBoy {
                 height: sprite.frame.h.into(),
             },
             &Rect {
-                x: self.state_machine.context().position.x.into(),
-                y: self.state_machine.context().position.y.into(),
+                x: (self.state_machine.context().position.x + sprite.sprite_source_size.x as i16)
+                    .into(),
+                y: (self.state_machine.context().position.y + sprite.sprite_source_size.y as i16)
+                    .into(),
                 width: sprite.frame.w.into(),
                 height: sprite.frame.h.into(),
             },
         )
+    }
+
+    pub fn draw_rect(&self, renderer: &Renderer) {
+        let sprite = self.current_sprite().expect("Cell not found");
+        renderer.draw_rect(&Rect {
+            x: (self.state_machine.context().position.x + sprite.sprite_source_size.x as i16)
+                .into(),
+            y: (self.state_machine.context().position.y + sprite.sprite_source_size.y as i16)
+                .into(),
+            width: sprite.frame.w.into(),
+            height: sprite.frame.h.into(),
+        })
+    }
+
+    pub fn bounding_box(&self) -> Rect {
+        let sprite = self.current_sprite().expect("Cell not found");
+        Rect {
+            x: (self.state_machine.context().position.x + sprite.sprite_source_size.x).into(),
+            y: (self.state_machine.context().position.y + sprite.sprite_source_size.y).into(),
+            width: self.image.width() as f32,
+            height: self.image.height() as f32,
+        }
+    }
+
+    fn frame_name(&self) -> String {
+        format!(
+            "{} ({}).png",
+            self.state_machine.frame_name(),
+            (self.state_machine.context().frame / 3) + 1
+        )
+    }
+
+    fn current_sprite(&self) -> Option<&Cell> {
+        self.sprite_sheet.frames.get(&self.frame_name())
     }
 
     fn update(&mut self) {
@@ -355,6 +468,10 @@ impl RedHatBoy {
     fn jump(&mut self) {
         self.state_machine = self.state_machine.transition(Event::Jump);
     }
+
+    fn knock_out(&mut self) {
+        self.state_machine = self.state_machine.transition(Event::KnockOut);
+    }
 }
 
 #[async_trait(?Send)]
@@ -362,30 +479,45 @@ impl Game for WalkTheDog {
     async fn initialize(&self) -> Result<Box<dyn Game>> {
         match self {
             WalkTheDog::Loading => {
-                let json = browser::fetch_json("Assets/sprite_sheets/rhb.json").await?;
-
+                let sheet = browser::fetch_json("Assets/sprite_sheets/rhb_trimmed.json").await?;
+                let background =
+                    engine::load_image("Assets/original/freetileset/png/BG/BG.png").await?;
+                let stone =
+                    engine::load_image("Assets/original/freetileset/png/Object/Stone.png").await?;
                 let rhb = RedHatBoy::new(
-                    json.into_serde::<Sheet>()?,
-                    engine::load_image("Assets/sprite_sheets/rhb.png").await?
+                    sheet.into_serde::<Sheet>()?,
+                    engine::load_image("Assets/sprite_sheets/rhb_trimmed.png").await?,
                 );
-                Ok(Box::new(WalkTheDog::Loaded(rhb)))
+                Ok(Box::new(WalkTheDog::Loaded(Walk {
+                    boy: rhb,
+                    background: Image::new(background, Point { x: 0, y: 0 }),
+                    stone: Image::new(stone, Point { x: 150, y: 546 }),
+                })))
             }
             WalkTheDog::Loaded(_) => Err(anyhow!("Error: Game is already initialized!")),
         }
     }
 
     fn update(&mut self, keystate: &KeyState) {
-        if let WalkTheDog::Loaded(rhb) = self {
+        if let WalkTheDog::Loaded(walk) = self {
             if keystate.is_pressed("ArrowRight") {
-                rhb.run_right();
+                walk.boy.run_right();
             }
             if keystate.is_pressed("ArrowDown") {
-                rhb.slide();
+                walk.boy.slide();
             }
             if keystate.is_pressed("Space") {
-                rhb.jump();
+                walk.boy.jump();
             }
-            rhb.update();
+            walk.boy.update();
+
+            if walk
+                .boy
+                .bounding_box()
+                .intersects(walk.stone.bounding_box())
+            {
+                walk.boy.knock_out();
+            }
         }
     }
 
@@ -396,8 +528,12 @@ impl Game for WalkTheDog {
             width: 600.0,
             height: 600.0,
         });
-        if let WalkTheDog::Loaded(rhb) = self {
-            rhb.draw(renderer);
+        if let WalkTheDog::Loaded(walk) = self {
+            walk.background.draw(renderer);
+            walk.boy.draw(renderer);
+            walk.boy.draw_rect(renderer);
+            walk.stone.draw(renderer);
+            walk.stone.draw_rect(renderer);
         }
     }
 }
